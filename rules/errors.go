@@ -19,15 +19,12 @@ import (
 	"go/types"
 
 	"github.com/securego/gosec/v2"
+	"github.com/securego/gosec/v2/issue"
 )
 
 type noErrorCheck struct {
-	gosec.MetaData
+	issue.MetaData
 	whitelist gosec.CallList
-}
-
-func (r *noErrorCheck) ID() string {
-	return r.MetaData.ID
 }
 
 func returnsError(callExpr *ast.CallExpr, ctx *gosec.Context) int {
@@ -49,28 +46,45 @@ func returnsError(callExpr *ast.CallExpr, ctx *gosec.Context) int {
 	return -1
 }
 
-func (r *noErrorCheck) Match(n ast.Node, ctx *gosec.Context) (*gosec.Issue, error) {
+// isWhitelisted reports whether the call is on the allowlist. A call made
+// through an imported package is also looked up by the package's own name, so
+// renaming the import does not change the result.
+func (r *noErrorCheck) isWhitelisted(callExpr *ast.CallExpr, ctx *gosec.Context) bool {
+	if r.whitelist.ContainsCallExpr(callExpr, ctx) != nil {
+		return true
+	}
+	if sel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
+		if id, ok := sel.X.(*ast.Ident); ok {
+			if pkg, ok := ctx.Info.Uses[id].(*types.PkgName); ok {
+				return r.whitelist.Contains(pkg.Imported().Name(), sel.Sel.Name)
+			}
+		}
+	}
+	return false
+}
+
+func (r *noErrorCheck) Match(n ast.Node, ctx *gosec.Context) (*issue.Issue, error) {
 	switch stmt := n.(type) {
 	case *ast.AssignStmt:
 		cfg := ctx.Config
 		if enabled, err := cfg.IsGlobalEnabled(gosec.Audit); err == nil && enabled {
 			for _, expr := range stmt.Rhs {
-				if callExpr, ok := expr.(*ast.CallExpr); ok && r.whitelist.ContainsCallExpr(expr, ctx) == nil {
+				if callExpr, ok := expr.(*ast.CallExpr); ok && !r.isWhitelisted(callExpr, ctx) {
 					pos := returnsError(callExpr, ctx)
 					if pos < 0 || pos >= len(stmt.Lhs) {
 						return nil, nil
 					}
 					if id, ok := stmt.Lhs[pos].(*ast.Ident); ok && id.Name == "_" {
-						return gosec.NewIssue(ctx, n, r.ID(), r.What, r.Severity, r.Confidence), nil
+						return ctx.NewIssue(n, r.ID(), r.What, r.Severity, r.Confidence), nil
 					}
 				}
 			}
 		}
 	case *ast.ExprStmt:
-		if callExpr, ok := stmt.X.(*ast.CallExpr); ok && r.whitelist.ContainsCallExpr(stmt.X, ctx) == nil {
+		if callExpr, ok := stmt.X.(*ast.CallExpr); ok && !r.isWhitelisted(callExpr, ctx) {
 			pos := returnsError(callExpr, ctx)
 			if pos >= 0 {
-				return gosec.NewIssue(ctx, n, r.ID(), r.What, r.Severity, r.Confidence), nil
+				return ctx.NewIssue(n, r.ID(), r.What, r.Severity, r.Confidence), nil
 			}
 		}
 	}
@@ -87,8 +101,10 @@ func NewNoErrorCheck(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
 	whitelist.AddAll("strings.Builder", "Write", "WriteByte", "WriteRune", "WriteString")
 	whitelist.Add("io.PipeWriter", "CloseWithError")
 	whitelist.Add("hash.Hash", "Write")
+	whitelist.Add("os", "Unsetenv")
+	whitelist.Add("rand", "Read")
 
-	if configured, ok := conf["G104"]; ok {
+	if configured, ok := conf[id]; ok {
 		if whitelisted, ok := configured.(map[string]interface{}); ok {
 			for pkg, funcs := range whitelisted {
 				if funcs, ok := funcs.([]interface{}); ok {
@@ -99,12 +115,7 @@ func NewNoErrorCheck(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
 	}
 
 	return &noErrorCheck{
-		MetaData: gosec.MetaData{
-			ID:         id,
-			Severity:   gosec.Low,
-			Confidence: gosec.High,
-			What:       "Errors unhandled.",
-		},
+		MetaData:  issue.NewMetaData(id, "Errors unhandled", issue.Low, issue.High),
 		whitelist: whitelist,
 	}, []ast.Node{(*ast.AssignStmt)(nil), (*ast.ExprStmt)(nil)}
 }

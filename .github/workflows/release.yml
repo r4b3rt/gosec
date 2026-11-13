@@ -2,45 +2,88 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     env:
       GO111MODULE: on
-      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
     steps:
-      - name: Checkout Source 
-        uses: actions/checkout@v2
+      - name: Checkout Source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Unshallow
         run: git fetch --prune --unshallow
       - name: Set up Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: 1.16.x
-      - name : Get release version
-        id: get_version
-        run: echo ::set-env name=RELEASE_VERSION::$(echo ${GITHUB_REF:10})
-      - name: Generate SBOM
-        uses: CycloneDX/gh-gomod-generate-sbom@v0.3.0
+          go-version: "1.27.4"
+          cache: false
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          json: true
-          output: bom.json
-          resolve-licenses: true
-          version: latest
-      - name: Release Binaries
-        uses: goreleaser/goreleaser-action@v2
-        with:
-          version: latest
-          args: release --rm-dist
+          cosign-release: "v3.1.4"
+      - name: Store Cosign private key in a file
+        run: 'echo "$COSIGN_KEY" > /tmp/cosign.key'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Release Docker Image
-        uses: elgohr/Publish-Docker-Github-Action@master
+          COSIGN_KEY: ${{secrets.COSIGN_KEY}}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
-            name: securego/gosec
-            username: ${{ secrets.DOCKER_USERNAME }}
-            password: ${{ secrets.DOCKER_PASSWORD }}
-            buildargs: GO_VERSION=1.16
-            tags: "latest,${{ env.RELEASE_VERSION }}"
-            tag_names: true
+          registry: ghcr.io
+          username: ${{github.actor}}
+          password: ${{secrets.GITHUB_TOKEN}}
+      - name: Generate SBOM
+        uses: CycloneDX/gh-gomod-generate-sbom@efc74245d6802c8cefd925620515442756c70d8f # v2
+        with:
+          version: v1
+          args: mod -licenses -json -output bom.json
+      - name: Docker meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        id: meta
+        with:
+          images: |
+            ghcr.io/securego/gosec
+          flavor: |
+            latest=true
+          tags: |
+            type=sha,format=long
+            type=semver,pattern={{version}}
+      - name: Release Binaries
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          COSIGN_PASSWORD: ${{secrets.COSIGN_PASSWORD}}
+      - name: Release Docker Image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        id: relimage
+        with:
+          platforms: linux/amd64,linux/arm/v7,linux/arm64,linux/ppc64le
+          tags: ${{steps.meta.outputs.tags}}
+          labels: ${{steps.meta.outputs.labels}}
+          push: true
+          build-args: GO_VERSION=1.27
+      - name: Sign Docker Image
+        run: |
+          images=""
+          for tag in ${TAGS}; do
+            images+="${tag}@${DIGEST} "
+          done
+          cosign sign --yes --key /tmp/cosign.key ${images}
+        env:
+          TAGS: ${{steps.meta.outputs.tags}}
+          COSIGN_PASSWORD: ${{secrets.COSIGN_PASSWORD}}
+          COSIGN_PRIVATE_KEY: /tmp/cosign.key
+          DIGEST: ${{steps.relimage.outputs.digest}}

@@ -16,18 +16,38 @@ package rules
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 
 	"github.com/securego/gosec/v2"
+	"github.com/securego/gosec/v2/issue"
 )
 
 type subprocess struct {
-	gosec.MetaData
-	gosec.CallList
+	callListRule
 }
 
-func (r *subprocess) ID() string {
-	return r.MetaData.ID
+// getEnclosingBodyStart returns the position of the '{' for the innermost function body enclosing the given position.
+// Returns token.NoPos if no enclosing body found.
+func getEnclosingBodyStart(pos token.Pos, ctx *gosec.Context) token.Pos {
+	if ctx.Root == nil {
+		return token.NoPos
+	}
+	var bodyStart token.Pos
+	ast.Inspect(ctx.Root, func(n ast.Node) bool {
+		var body *ast.BlockStmt
+		switch f := n.(type) {
+		case *ast.FuncDecl:
+			body = f.Body
+		case *ast.FuncLit:
+			body = f.Body
+		}
+		if body != nil && body.Pos() <= pos && pos < body.End() && body.Lbrace.IsValid() {
+			bodyStart = body.Lbrace
+		}
+		return true
+	})
+	return bodyStart
 }
 
 // TODO(gm) The only real potential for command injection with a Go project
@@ -39,21 +59,35 @@ func (r *subprocess) ID() string {
 // is unsafe. For example:
 //
 // syscall.Exec("echo", "foobar" + tainted)
-func (r *subprocess) Match(n ast.Node, c *gosec.Context) (*gosec.Issue, error) {
-	if node := r.ContainsPkgCallExpr(n, c, false); node != nil {
+func (r *subprocess) Match(n ast.Node, c *gosec.Context) (*issue.Issue, error) {
+	if node := r.calls.ContainsPkgCallExpr(n, c, false); node != nil {
 		args := node.Args
-		if r.isContext(n, c) {
+		// Code that does not compile can call CommandContext without arguments.
+		if r.isContext(n, c) && len(args) > 0 {
 			args = args[1:]
 		}
-		for _, arg := range args {
+		for i, arg := range args {
 			if ident, ok := arg.(*ast.Ident); ok {
 				obj := c.Info.ObjectOf(ident)
-				if _, ok := obj.(*types.Var); ok && !gosec.TryResolve(ident, c) {
-					return gosec.NewIssue(c, n, r.ID(), "Subprocess launched with variable", gosec.Medium, gosec.High), nil
+				if v, ok := obj.(*types.Var); ok {
+					// Special case: struct fields OR function parameters/receivers used as executable name (i==0) -> skip
+					if i == 0 {
+						if v.IsField() {
+							continue
+						}
+						bodyStart := getEnclosingBodyStart(ident.Pos(), c)
+						if bodyStart != token.NoPos && obj.Pos() < bodyStart {
+							continue // Parameter or receiver (declared before body brace)
+						}
+					}
+					// For all variables: flag if not resolvable to a constant
+					if !gosec.TryResolve(ident, c) {
+						return c.NewIssue(n, r.ID(), "Subprocess launched with variable", issue.Medium, issue.High), nil
+					}
 				}
 			} else if !gosec.TryResolve(arg, c) {
-				// the arg is not a constant or a variable but instead a function call or os.Args[i]
-				return gosec.NewIssue(c, n, r.ID(), "Subprocess launched with function call as argument or cmd arguments", gosec.Medium, gosec.High), nil
+				// Non-identifier arguments that cannot be resolved
+				return c.NewIssue(n, r.ID(), "Subprocess launched with a potential tainted input or cmd arguments", issue.Medium, issue.High), nil
 			}
 		}
 	}
@@ -61,25 +95,24 @@ func (r *subprocess) Match(n ast.Node, c *gosec.Context) (*gosec.Issue, error) {
 }
 
 // isContext checks whether or not the node is a CommandContext call or not
-// Thi is required in order to skip the first argument from the check.
+// This is required in order to skip the first argument from the check.
+// Match only calls it for functions in the call list, so the function name is
+// enough: the package name in the call depends on the import, e.g. execabs or
+// a renamed os/exec.
 func (r *subprocess) isContext(n ast.Node, ctx *gosec.Context) bool {
-	selector, indent, err := gosec.GetCallInfo(n, ctx)
-	if err != nil {
-		return false
-	}
-	if selector == "exec" && indent == "CommandContext" {
-		return true
-	}
-	return false
+	_, fn, err := gosec.GetCallInfo(n, ctx)
+	return err == nil && fn == "CommandContext"
 }
 
 // NewSubproc detects cases where we are forking out to an external process
-func NewSubproc(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
-	rule := &subprocess{gosec.MetaData{ID: id}, gosec.NewCallList()}
+func NewSubproc(id string, _ gosec.Config) (gosec.Rule, []ast.Node) {
+	rule := &subprocess{newCallListRule(id, "Subprocess launched with variable", issue.Medium, issue.High)}
 	rule.Add("os/exec", "Command")
 	rule.Add("os/exec", "CommandContext")
 	rule.Add("syscall", "Exec")
 	rule.Add("syscall", "ForkExec")
 	rule.Add("syscall", "StartProcess")
+	rule.Add("golang.org/x/sys/execabs", "Command")
+	rule.Add("golang.org/x/sys/execabs", "CommandContext")
 	return rule, []ast.Node{(*ast.CallExpr)(nil)}
 }

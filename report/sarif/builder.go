@@ -8,7 +8,7 @@ func NewReport(version string, schema string) *Report {
 	}
 }
 
-// WithRuns dafines runs for the current report
+// WithRuns defines runs for the current report
 func (r *Report) WithRuns(runs ...*Run) *Report {
 	r.Runs = runs
 	return r
@@ -79,13 +79,41 @@ func NewTool(driver *ToolComponent) *Tool {
 }
 
 // NewResult instantiate a Result
-func NewResult(ruleID string, ruleIndex int, level Level, message string) *Result {
-	return &Result{
-		RuleID:    ruleID,
-		RuleIndex: ruleIndex,
-		Level:     level,
-		Message:   NewMessage(message),
+func NewResult(ruleID string, ruleIndex int, level Level, message string, suppressions []*Suppression, autofix string) *Result {
+	result := &Result{
+		RuleID:       ruleID,
+		RuleIndex:    ruleIndex,
+		Level:        level,
+		Message:      NewMessage(message),
+		Suppressions: suppressions,
 	}
+
+	// Only create Fix when autofix content exists
+	// Fixes with nil/null ArtifactChanges violate SARIF 2.1.0 schema
+	if autofix != "" {
+		result.Fixes = []*Fix{
+			{
+				Description: &Message{
+					Text:     autofix,
+					Markdown: autofix,
+				},
+				// ArtifactChanges MUST be a non-empty array per SARIF 2.1.0 schema
+				ArtifactChanges: []*ArtifactChange{
+					{
+						ArtifactLocation: &ArtifactLocation{
+							Description: NewMessage("File requiring changes"),
+						},
+						Replacements: []*Replacement{
+							{
+								DeletedRegion: NewRegion(1, 1, 1, 1, ""),
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	return result
 }
 
 // NewMessage instantiate a Message
@@ -197,5 +225,13 @@ func NewToolComponentReference(name string) *ToolComponentReference {
 	return &ToolComponentReference{
 		Name: name,
 		GUID: uuid3(name),
+	}
+}
+
+// NewSuppression instantiate a Suppression
+func NewSuppression(kind string, justification string) *Suppression {
+	return &Suppression{
+		Kind:          kind,
+		Justification: justification,
 	}
 }

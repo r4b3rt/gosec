@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"strings"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
 	"github.com/securego/gosec/v2"
 )
 
@@ -76,7 +77,7 @@ var _ = Describe("Configuration", func() {
 	Context("when using global configuration options", func() {
 		It("should have a default global section", func() {
 			settings, err := configuration.Get("global")
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			expectedType := make(map[gosec.GlobalOption]string)
 			Expect(settings).Should(BeAssignableToTypeOf(expectedType))
 		})
@@ -84,7 +85,7 @@ var _ = Describe("Configuration", func() {
 		It("should save global settings to correct section", func() {
 			configuration.SetGlobal(gosec.Nosec, "enabled")
 			settings, err := configuration.Get("global")
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			if globals, ok := settings.(map[gosec.GlobalOption]string); ok {
 				Expect(globals["nosec"]).Should(MatchRegexp("enabled"))
 			} else {
@@ -92,14 +93,14 @@ var _ = Describe("Configuration", func() {
 			}
 
 			setValue, err := configuration.GetGlobal(gosec.Nosec)
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(setValue).Should(MatchRegexp("enabled"))
 		})
 
 		It("should find global settings which are enabled", func() {
 			configuration.SetGlobal(gosec.Nosec, "enabled")
 			enabled, err := configuration.IsGlobalEnabled(gosec.Nosec)
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(enabled).Should(BeTrue())
 		})
 
@@ -112,10 +113,10 @@ var _ = Describe("Configuration", func() {
 			}`
 			cfg := gosec.NewConfig()
 			_, err := cfg.ReadFrom(strings.NewReader(config))
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 
 			value, err := cfg.GetGlobal(gosec.Nosec)
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(value).Should(Equal("enabled"))
 		})
 		It("should parse the global settings of other types from file", func() {
@@ -127,11 +128,100 @@ var _ = Describe("Configuration", func() {
 			}`
 			cfg := gosec.NewConfig()
 			_, err := cfg.ReadFrom(strings.NewReader(config))
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 
 			value, err := cfg.GetGlobal(gosec.Nosec)
-			Expect(err).Should(BeNil())
+			Expect(err).ShouldNot(HaveOccurred())
 			Expect(value).Should(Equal("true"))
+		})
+	})
+
+	Context("when managing exclude rules", func() {
+		It("should set and get exclude rules", func() {
+			rules := []gosec.PathExcludeRule{
+				{Path: ".*test\\.go$", Rules: []string{"G101", "G102"}},
+				{Path: ".*_gen\\.go$", Rules: []string{"*"}},
+			}
+			configuration.SetExcludeRules(rules)
+
+			excludedRules, err := configuration.GetExcludeRules()
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(excludedRules).Should(HaveLen(2))
+			Expect(excludedRules[0].Path).Should(Equal(".*test\\.go$"))
+			Expect(excludedRules[0].Rules).Should(ConsistOf("G101", "G102"))
+			Expect(excludedRules[1].Path).Should(Equal(".*_gen\\.go$"))
+			Expect(excludedRules[1].Rules).Should(ConsistOf("*"))
+		})
+
+		It("should handle empty exclude rules", func() {
+			configuration.SetExcludeRules([]gosec.PathExcludeRule{})
+
+			excludedRules, err := configuration.GetExcludeRules()
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(excludedRules).Should(BeEmpty())
+		})
+
+		It("should overwrite previous exclude rules", func() {
+			configuration.SetExcludeRules([]gosec.PathExcludeRule{
+				{Path: ".*old\\.go$", Rules: []string{"G101"}},
+			})
+
+			configuration.SetExcludeRules([]gosec.PathExcludeRule{
+				{Path: ".*new\\.go$", Rules: []string{"G201"}},
+			})
+
+			excludedRules, err := configuration.GetExcludeRules()
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(excludedRules).Should(HaveLen(1))
+			Expect(excludedRules[0].Path).Should(Equal(".*new\\.go$"))
+		})
+
+		It("should persist exclude rules in configuration", func() {
+			rules := []gosec.PathExcludeRule{
+				{Path: ".*vendor/.*", Rules: []string{"G301", "G302"}},
+			}
+			configuration.SetExcludeRules(rules)
+
+			buffer := bytes.NewBuffer([]byte{})
+			_, err := configuration.WriteTo(buffer)
+			Expect(err).ShouldNot(HaveOccurred())
+
+			newConfig := gosec.NewConfig()
+			_, err = newConfig.ReadFrom(buffer)
+			Expect(err).ShouldNot(HaveOccurred())
+
+			excludedRules, err := newConfig.GetExcludeRules()
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(excludedRules).Should(HaveLen(1))
+			Expect(excludedRules[0].Path).Should(Equal(".*vendor/.*"))
+			Expect(excludedRules[0].Rules).Should(ConsistOf("G301", "G302"))
+		})
+
+		It("should handle nil configuration gracefully", func() {
+			var nilConfig gosec.Config
+			nilConfig.SetExcludeRules([]gosec.PathExcludeRule{{Path: ".*", Rules: []string{"*"}}})
+
+			rules, err := nilConfig.GetExcludeRules()
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(rules).Should(BeNil())
+		})
+	})
+
+	Context("when building the nosec tag", func() {
+		It("should prepend a hash to a bare tag", func() {
+			Expect(gosec.NoSecTag("dontanalyze")).Should(Equal("#dontanalyze"))
+		})
+
+		It("should not double the hash of an already prefixed tag", func() {
+			Expect(gosec.NoSecTag("#dontanalyze")).Should(Equal("#dontanalyze"))
+		})
+
+		It("should only trim a single leading hash", func() {
+			Expect(gosec.NoSecTag("##dontanalyze")).Should(Equal("##dontanalyze"))
+		})
+
+		It("should keep hashes which are not leading", func() {
+			Expect(gosec.NoSecTag("dont#analyze")).Should(Equal("#dont#analyze"))
 		})
 	})
 })

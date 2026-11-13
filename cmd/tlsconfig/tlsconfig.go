@@ -1,5 +1,3 @@
-// +build go1.12
-
 package main
 
 import (
@@ -9,13 +7,14 @@ import (
 	"flag"
 	"fmt"
 	"go/format"
-	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/mozilla/tls-observatory/constants"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 var (
@@ -47,8 +46,8 @@ type Configuration struct {
 	ECDHParamSize         float64  `json:"ecdh_param_size"`
 	HstsMinAge            float64  `json:"hsts_min_age"`
 	OldestClients         []string `json:"oldest_clients"`
-	OCSPStample           bool     `json:"ocsp_staple"`
-	ServerPreferedOrder   bool     `json:"server_preferred_order"`
+	OCSPStaple            bool     `json:"ocsp_staple"`
+	ServerPreferredOrder  bool     `json:"server_preferred_order"`
 	MaxCertLifespan       float64  `json:"maximum_certificate_lifespan"`
 }
 
@@ -65,11 +64,11 @@ type goTLSConfiguration struct {
 
 // getTLSConfFromURL retrieves the json containing the TLS configurations from the specified URL.
 func getTLSConfFromURL(url string) (*ServerSideTLSJson, error) {
-	r, err := http.Get(url) // #nosec G107
+	r, err := http.Get(url) //#nosec G107
 	if err != nil {
 		return nil, err
 	}
-	defer r.Body.Close()
+	defer r.Body.Close() //#nosec G307
 
 	var sstls ServerSideTLSJson
 	err = json.NewDecoder(r.Body).Decode(&sstls)
@@ -81,7 +80,8 @@ func getTLSConfFromURL(url string) (*ServerSideTLSJson, error) {
 }
 
 func getGoCipherConfig(name string, sstls ServerSideTLSJson) (goCipherConfiguration, error) {
-	cipherConf := goCipherConfiguration{Name: strings.Title(name)}
+	caser := cases.Title(language.English)
+	cipherConf := goCipherConfiguration{Name: caser.String(name)}
 	conf, ok := sstls.Configurations[name]
 	if !ok {
 		return cipherConf, fmt.Errorf("TLS configuration '%s' not found", name)
@@ -108,7 +108,7 @@ func getGoCipherConfig(name string, sstls ServerSideTLSJson) (goCipherConfigurat
 		cipherConf.MinVersion = fmt.Sprintf("0x%04x", versions[0])
 		cipherConf.MaxVersion = fmt.Sprintf("0x%04x", versions[len(versions)-1])
 	} else {
-		return cipherConf, fmt.Errorf("No TLS versions found for configuration '%s'", name)
+		return cipherConf, fmt.Errorf("no TLS versions found for configuration '%s'", name)
 	}
 	return cipherConf, nil
 }
@@ -121,27 +121,27 @@ func getGoTLSConf() (goTLSConfiguration, error) {
 		panic(msg)
 	}
 
-	tlsConfg := goTLSConfiguration{}
+	tlsConfig := goTLSConfiguration{}
 
 	modern, err := getGoCipherConfig("modern", *sstls)
 	if err != nil {
-		return tlsConfg, err
+		return tlsConfig, err
 	}
-	tlsConfg.cipherConfigs = append(tlsConfg.cipherConfigs, modern)
+	tlsConfig.cipherConfigs = append(tlsConfig.cipherConfigs, modern)
 
 	intermediate, err := getGoCipherConfig("intermediate", *sstls)
 	if err != nil {
-		return tlsConfg, err
+		return tlsConfig, err
 	}
-	tlsConfg.cipherConfigs = append(tlsConfg.cipherConfigs, intermediate)
+	tlsConfig.cipherConfigs = append(tlsConfig.cipherConfigs, intermediate)
 
 	old, err := getGoCipherConfig("old", *sstls)
 	if err != nil {
-		return tlsConfg, err
+		return tlsConfig, err
 	}
-	tlsConfg.cipherConfigs = append(tlsConfg.cipherConfigs, old)
+	tlsConfig.cipherConfigs = append(tlsConfig.cipherConfigs, old)
 
-	return tlsConfg, nil
+	return tlsConfig, nil
 }
 
 func getCurrentDir() (string, error) {
@@ -187,7 +187,7 @@ func main() {
 	}
 
 	outputPath := filepath.Join(dir, *outputFile)
-	if err := ioutil.WriteFile(outputPath, src, 0644); err != nil {
+	if err := os.WriteFile(outputPath, src, 0o644); err != nil /*#nosec G306*/ {
 		log.Fatalf("Writing output: %s", err)
-	} // #nosec G306
+	}
 }

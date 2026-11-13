@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/securego/gosec/v2"
@@ -25,12 +25,12 @@ var _ = Describe("gosec rules", func() {
 	BeforeEach(func() {
 		logger, _ = testutils.NewLogger()
 		config = gosec.NewConfig()
-		analyzer = gosec.NewAnalyzer(config, tests, logger)
+		analyzer = gosec.NewAnalyzer(config, tests, false, false, 1, logger)
 		runner = func(rule string, samples []testutils.CodeSample) {
 			for n, sample := range samples {
 				analyzer.Reset()
 				analyzer.SetConfig(sample.Config)
-				analyzer.LoadRules(rules.Generate(rules.NewRuleFilter(false, rule)).Builders())
+				analyzer.LoadRules(rules.Generate(false, rules.NewRuleFilter(false, rule)).RulesInfo())
 				pkg := testutils.NewTestPackage()
 				defer pkg.Close()
 				for i, code := range sample.Code {
@@ -53,6 +53,10 @@ var _ = Describe("gosec rules", func() {
 	Context("report correct errors for all samples", func() {
 		It("should detect hardcoded credentials", func() {
 			runner("G101", testutils.SampleCodeG101)
+		})
+
+		It("should detect hardcoded credential values", func() {
+			runner("G101", testutils.SampleCodeG101Values)
 		})
 
 		It("should detect binding to all network interfaces", func() {
@@ -89,6 +93,29 @@ var _ = Describe("gosec rules", func() {
 
 		It("should detect DoS vulnerability via decompression bomb", func() {
 			runner("G110", testutils.SampleCodeG110)
+		})
+
+		It("should detect potential directory traversal", func() {
+			runner("G111", testutils.SampleCodeG111)
+		})
+
+		It("should detect potential slowloris attack", func() {
+			runner("G112", testutils.SampleCodeG112)
+		})
+
+		It("should detect uses of net/http serve functions that have no support for setting timeouts", func() {
+			runner("G114", testutils.SampleCodeG114)
+		})
+
+		It("should detect Trojan Source attacks using bidirectional Unicode characters", func() {
+			runner("G116", testutils.SampleCodeG116)
+		})
+
+		It("should detect exported struct fields that may contain secrets and are JSON serializable", func() {
+			runner("G117", testutils.SampleCodeG117)
+		})
+		It("should detect unescaped elements passed to url.JoinPath", func() {
+			runner("G125", testutils.SampleCodeG125)
 		})
 
 		It("should detect sql injection via format strings", func() {
@@ -131,7 +158,7 @@ var _ = Describe("gosec rules", func() {
 			runner("G306", testutils.SampleCodeG306)
 		})
 
-		It("should detect unsafe defer of os.Close", func() {
+		It("should detect poor permissions when creating a file", func() {
 			runner("G307", testutils.SampleCodeG307)
 		})
 
@@ -155,6 +182,22 @@ var _ = Describe("gosec rules", func() {
 			runner("G404", testutils.SampleCodeG404)
 		})
 
+		It("should detect weak crypto algorithms", func() {
+			runner("G405", testutils.SampleCodeG405)
+		})
+
+		It("should detect weak crypto algorithms", func() {
+			runner("G405", testutils.SampleCodeG405b)
+		})
+
+		It("should detect weak crypto algorithms", func() {
+			runner("G406", testutils.SampleCodeG406)
+		})
+
+		It("should detect weak crypto algorithms", func() {
+			runner("G406", testutils.SampleCodeG406b)
+		})
+
 		It("should detect blocklisted imports - MD5", func() {
 			runner("G501", testutils.SampleCodeG501)
 		})
@@ -175,8 +218,19 @@ var _ = Describe("gosec rules", func() {
 			runner("G505", testutils.SampleCodeG505)
 		})
 
+		It("should detect blocklisted imports - MD4", func() {
+			runner("G506", testutils.SampleCodeG506)
+		})
+
+		It("should detect blocklisted imports - RIPEMD160", func() {
+			runner("G507", testutils.SampleCodeG507)
+		})
+
 		It("should detect implicit aliasing in ForRange", func() {
-			runner("G601", testutils.SampleCodeG601)
+			major, minor, _ := gosec.GoVersion()
+			if major <= 1 && minor < 22 {
+				runner("G601", testutils.SampleCodeG601)
+			}
 		})
 	})
 })

@@ -3,8 +3,9 @@ package gosec_test
 import (
 	"go/ast"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
 	"github.com/securego/gosec/v2"
 	"github.com/securego/gosec/v2/testutils"
 )
@@ -335,6 +336,252 @@ var _ = Describe("Resolve ast node to concrete value", func() {
 			ast.Walk(v, ctx.Root)
 			Expect(value).ShouldNot(BeNil())
 			Expect(gosec.TryResolve(value, ctx)).Should(BeFalse())
+		})
+
+		It("should resolve a constant from another package", func() {
+			var value *ast.SelectorExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import "os"; func main(){ println(os.DevNull) }`)
+			ctx := pkg.CreateContext("foo.go")
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.SelectorExpr); ok {
+					value = node
+					return false
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(value).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(value, ctx)).Should(BeTrue())
+		})
+
+		It("should not resolve a variable from another package", func() {
+			var value *ast.SelectorExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import "os"; func main(){ println(os.Args) }`)
+			ctx := pkg.CreateContext("foo.go")
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.SelectorExpr); ok {
+					value = node
+					return false
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(value).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(value, ctx)).Should(BeFalse())
+		})
+
+		It("should resolve a typed constant conversion", func() {
+			var value *ast.CallExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; type name string; const x name = "bar"; func main(){ println(string(x)) }`)
+			ctx := pkg.CreateContext("foo.go")
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.CallExpr); ok {
+					if fn, ok := node.Fun.(*ast.Ident); ok && fn.Name == "string" {
+						value = node
+						return false
+					}
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(value).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(value, ctx)).Should(BeTrue())
+		})
+
+		It("should resolve a strings.Builder built only from constants", func() {
+			var call *ast.CallExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import "strings"; func main(){ var b strings.Builder; b.WriteString(","); b.WriteString("?"); println(b.String()) }`)
+			ctx := pkg.CreateContext("foo.go")
+			ctx.PkgFiles = []*ast.File{ctx.Root}
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "String" {
+						call = node
+						return false
+					}
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(call).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(call, ctx)).Should(BeTrue())
+		})
+
+		It("should resolve a *strings.Builder literal built only from constants", func() {
+			var call *ast.CallExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import "strings"; func main(){ b := &strings.Builder{}; b.Grow(8); b.WriteString("?"); println(b.String()) }`)
+			ctx := pkg.CreateContext("foo.go")
+			ctx.PkgFiles = []*ast.File{ctx.Root}
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "String" {
+						call = node
+						return false
+					}
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(call).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(call, ctx)).Should(BeTrue())
+		})
+
+		It("should resolve a bytes.Buffer built only from constants", func() {
+			var call *ast.CallExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import "bytes"; func main(){ var b bytes.Buffer; b.WriteString("?"); b.WriteByte(','); println(b.String()) }`)
+			ctx := pkg.CreateContext("foo.go")
+			ctx.PkgFiles = []*ast.File{ctx.Root}
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "String" {
+						call = node
+						return false
+					}
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(call).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(call, ctx)).Should(BeTrue())
+		})
+
+		It("should not resolve a builder written with non-constant input", func() {
+			var call *ast.CallExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import ("os"; "strings"); func main(){ var b strings.Builder; b.WriteString(os.Args[0]); println(b.String()) }`)
+			ctx := pkg.CreateContext("foo.go")
+			ctx.PkgFiles = []*ast.File{ctx.Root}
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "String" {
+						call = node
+						return false
+					}
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(call).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(call, ctx)).Should(BeFalse())
+		})
+
+		It("should not resolve a builder whose address escapes", func() {
+			var call *ast.CallExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import ("fmt"; "strings"); func main(){ var b strings.Builder; b.WriteString("?"); fmt.Fprintf(&b, "%s", "x"); println(b.String()) }`)
+			ctx := pkg.CreateContext("foo.go")
+			ctx.PkgFiles = []*ast.File{ctx.Root}
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "String" {
+						call = node
+						return false
+					}
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(call).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(call, ctx)).Should(BeFalse())
+		})
+
+		It("should not resolve a builder from an opaque initializer", func() {
+			var call *ast.CallExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import "strings"; func makeB() strings.Builder { var b strings.Builder; b.WriteString("?"); return b }; func main(){ b := makeB(); println(b.String()) }`)
+			ctx := pkg.CreateContext("foo.go")
+			ctx.PkgFiles = []*ast.File{ctx.Root}
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "String" {
+						call = node
+						return false
+					}
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(call).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(call, ctx)).Should(BeFalse())
+		})
+
+		It("should not resolve a builder written with an unsupported method", func() {
+			var call *ast.CallExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import "bytes"; func main(){ var b bytes.Buffer; b.WriteString("?"); b.Truncate(0); println(b.String()) }`)
+			ctx := pkg.CreateContext("foo.go")
+			ctx.PkgFiles = []*ast.File{ctx.Root}
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "String" {
+						call = node
+						return false
+					}
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(call).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(call, ctx)).Should(BeFalse())
+		})
+
+		It("should not resolve a package-level builder", func() {
+			var call *ast.CallExpr
+			pkg := testutils.NewTestPackage()
+			defer pkg.Close()
+			pkg.AddFile("foo.go", `package main; import "strings"; var b strings.Builder; func main(){ b.WriteString("?"); println(b.String()) }`)
+			ctx := pkg.CreateContext("foo.go")
+			ctx.PkgFiles = []*ast.File{ctx.Root}
+			v := testutils.NewMockVisitor()
+			v.Callback = func(n ast.Node, ctx *gosec.Context) bool {
+				if node, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "String" {
+						call = node
+						return false
+					}
+				}
+				return true
+			}
+			v.Context = ctx
+			ast.Walk(v, ctx.Root)
+			Expect(call).ShouldNot(BeNil())
+			Expect(gosec.TryResolve(call, ctx)).Should(BeFalse())
 		})
 	})
 })

@@ -18,6 +18,7 @@ import (
 	"io"
 
 	"github.com/securego/gosec/v2"
+	"github.com/securego/gosec/v2/issue"
 	"github.com/securego/gosec/v2/report/csv"
 	"github.com/securego/gosec/v2/report/golint"
 	"github.com/securego/gosec/v2/report/html"
@@ -53,6 +54,9 @@ const (
 // the specified format. The formats currently accepted are: json, yaml, csv, junit-xml, html, sonarqube, golint and text.
 func CreateReport(w io.Writer, format string, enableColor bool, rootPaths []string, data *gosec.ReportInfo) error {
 	var err error
+	if format != "json" && format != "sarif" {
+		data.Issues = filterOutSuppressedIssues(data.Issues)
+	}
 	switch format {
 	case "json":
 		err = json.WriteReport(w, data)
@@ -76,4 +80,14 @@ func CreateReport(w io.Writer, format string, enableColor bool, rootPaths []stri
 		err = text.WriteReport(w, data, enableColor)
 	}
 	return err
+}
+
+func filterOutSuppressedIssues(issues []*issue.Issue) []*issue.Issue {
+	nonSuppressedIssues := []*issue.Issue{}
+	for _, issue := range issues {
+		if len(issue.Suppressions) == 0 {
+			nonSuppressedIssues = append(nonSuppressedIssues, issue)
+		}
+	}
+	return nonSuppressedIssues
 }

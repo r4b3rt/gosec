@@ -16,68 +16,69 @@ package rules
 
 import (
 	"go/ast"
+	"go/constant"
+	"go/token"
 	"regexp"
 
 	"github.com/securego/gosec/v2"
+	"github.com/securego/gosec/v2/issue"
 )
 
-// Looks for net.Listen("0.0.0.0") or net.Listen(":8080")
+// Looks for net.Listen("0.0.0.0"), net.Listen("[::]:8080") or net.Listen(":8080")
 type bindsToAllNetworkInterfaces struct {
-	gosec.MetaData
-	calls   gosec.CallList
+	callListRule
 	pattern *regexp.Regexp
 }
 
-func (r *bindsToAllNetworkInterfaces) ID() string {
-	return r.MetaData.ID
-}
-
-func (r *bindsToAllNetworkInterfaces) Match(n ast.Node, c *gosec.Context) (*gosec.Issue, error) {
+func (r *bindsToAllNetworkInterfaces) Match(n ast.Node, c *gosec.Context) (*issue.Issue, error) {
 	callExpr := r.calls.ContainsPkgCallExpr(n, c, false)
 	if callExpr == nil {
 		return nil, nil
 	}
 	if len(callExpr.Args) > 1 {
-		arg := callExpr.Args[1]
-		if bl, ok := arg.(*ast.BasicLit); ok {
-			if arg, err := gosec.GetString(bl); err == nil {
-				if r.pattern.MatchString(arg) {
-					return gosec.NewIssue(c, n, r.ID(), r.What, r.Severity, r.Confidence), nil
-				}
-			}
-		} else if ident, ok := arg.(*ast.Ident); ok {
-			values := gosec.GetIdentStringValues(ident)
-			for _, value := range values {
-				if r.pattern.MatchString(value) {
-					return gosec.NewIssue(c, n, r.ID(), r.What, r.Severity, r.Confidence), nil
-				}
+		for _, value := range listenAddressValues(callExpr.Args[1], c) {
+			if gosec.RegexMatchWithCache(r.pattern, value) {
+				return c.NewIssue(n, r.ID(), r.What, r.Severity, r.Confidence), nil
 			}
 		}
 	} else if len(callExpr.Args) > 0 {
 		values := gosec.GetCallStringArgsValues(callExpr.Args[0], c)
 		for _, value := range values {
-			if r.pattern.MatchString(value) {
-				return gosec.NewIssue(c, n, r.ID(), r.What, r.Severity, r.Confidence), nil
+			if gosec.RegexMatchWithCache(r.pattern, value) {
+				return c.NewIssue(n, r.ID(), r.What, r.Severity, r.Confidence), nil
 			}
 		}
 	}
 	return nil, nil
 }
 
+// listenAddressValues returns the values of a listen address that can be resolved
+// statically. For a string concatenation only the leading operand is resolved,
+// because it holds the host part of the address (e.g. ":" + port).
+func listenAddressValues(expr ast.Expr, c *gosec.Context) []string {
+	if tv, ok := c.Info.Types[expr]; ok && tv.Value != nil && tv.Value.Kind() == constant.String {
+		return []string{constant.StringVal(tv.Value)}
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return gosec.GetIdentStringValues(e)
+	case *ast.ParenExpr:
+		return listenAddressValues(e.X, c)
+	case *ast.BinaryExpr:
+		if e.Op == token.ADD {
+			return listenAddressValues(e.X, c)
+		}
+	}
+	return nil
+}
+
 // NewBindsToAllNetworkInterfaces detects socket connections that are setup to
 // listen on all network interfaces.
-func NewBindsToAllNetworkInterfaces(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
-	calls := gosec.NewCallList()
-	calls.Add("net", "Listen")
-	calls.Add("crypto/tls", "Listen")
-	return &bindsToAllNetworkInterfaces{
-		calls:   calls,
-		pattern: regexp.MustCompile(`^(0.0.0.0|:).*$`),
-		MetaData: gosec.MetaData{
-			ID:         id,
-			Severity:   gosec.Medium,
-			Confidence: gosec.High,
-			What:       "Binds to all network interfaces",
-		},
-	}, []ast.Node{(*ast.CallExpr)(nil)}
+func NewBindsToAllNetworkInterfaces(id string, _ gosec.Config) (gosec.Rule, []ast.Node) {
+	rule := &bindsToAllNetworkInterfaces{
+		callListRule: newCallListRule(id, "Binds to all network interfaces", issue.Medium, issue.High),
+		pattern:      regexp.MustCompile(`^(0\.0\.0\.0|\[::\]|:).*$`),
+	}
+	rule.Add("net", "Listen").Add("crypto/tls", "Listen")
+	return rule, []ast.Node{(*ast.CallExpr)(nil)}
 }

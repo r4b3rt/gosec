@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"go/ast"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
 	"github.com/securego/gosec/v2"
+	"github.com/securego/gosec/v2/issue"
 )
 
 type mockrule struct {
-	issue    *gosec.Issue
+	issue    *issue.Issue
 	err      error
 	callback func(n ast.Node, ctx *gosec.Context) bool
 }
@@ -19,7 +21,7 @@ func (m *mockrule) ID() string {
 	return "MOCK"
 }
 
-func (m *mockrule) Match(n ast.Node, ctx *gosec.Context) (*gosec.Issue, error) {
+func (m *mockrule) Match(n ast.Node, ctx *gosec.Context) (*issue.Issue, error) {
 	if m.callback(n, ctx) {
 		return m.issue, nil
 	}
@@ -42,9 +44,9 @@ var _ = Describe("Rule", func() {
 				callback: func(n ast.Node, ctx *gosec.Context) bool { return false },
 			}
 			dummyIssueRule = &mockrule{
-				issue: &gosec.Issue{
-					Severity:   gosec.High,
-					Confidence: gosec.High,
+				issue: &issue.Issue{
+					Severity:   issue.High,
+					Confidence: issue.High,
 					What:       `Some explanation of the thing`,
 					File:       "main.go",
 					Code:       `#include <stdio.h> int main(){ puts("hello world"); }`,
@@ -59,26 +61,36 @@ var _ = Describe("Rule", func() {
 			registeredNodeB := (*ast.AssignStmt)(nil)
 			unregisteredNode := (*ast.BinaryExpr)(nil)
 
-			ruleset.Register(dummyIssueRule, registeredNodeA, registeredNodeB)
+			ruleset.Register(dummyIssueRule, false, registeredNodeA, registeredNodeB)
 			Expect(ruleset.RegisteredFor(unregisteredNode)).Should(BeEmpty())
 			Expect(ruleset.RegisteredFor(registeredNodeA)).Should(ContainElement(dummyIssueRule))
 			Expect(ruleset.RegisteredFor(registeredNodeB)).Should(ContainElement(dummyIssueRule))
+			Expect(ruleset.IsRuleSuppressed(dummyIssueRule.ID())).Should(BeFalse())
 		})
 
 		It("should not register a rule when no ast.Nodes are specified", func() {
-			ruleset.Register(dummyErrorRule)
-			Expect(ruleset).Should(BeEmpty())
+			ruleset.Register(dummyErrorRule, false)
+			Expect(ruleset.Rules).Should(BeEmpty())
 		})
 
 		It("should be possible to retrieve a list of rules for a given node type", func() {
 			registeredNode := (*ast.CallExpr)(nil)
 			unregisteredNode := (*ast.AssignStmt)(nil)
-			ruleset.Register(dummyErrorRule, registeredNode)
-			ruleset.Register(dummyIssueRule, registeredNode)
+			ruleset.Register(dummyErrorRule, false, registeredNode)
+			ruleset.Register(dummyIssueRule, false, registeredNode)
 			Expect(ruleset.RegisteredFor(unregisteredNode)).Should(BeEmpty())
 			Expect(ruleset.RegisteredFor(registeredNode)).Should(HaveLen(2))
 			Expect(ruleset.RegisteredFor(registeredNode)).Should(ContainElement(dummyErrorRule))
 			Expect(ruleset.RegisteredFor(registeredNode)).Should(ContainElement(dummyIssueRule))
+		})
+
+		It("should register a suppressed rule", func() {
+			registeredNode := (*ast.CallExpr)(nil)
+			unregisteredNode := (*ast.AssignStmt)(nil)
+			ruleset.Register(dummyIssueRule, true, registeredNode)
+			Expect(ruleset.RegisteredFor(registeredNode)).Should(ContainElement(dummyIssueRule))
+			Expect(ruleset.RegisteredFor(unregisteredNode)).Should(BeEmpty())
+			Expect(ruleset.IsRuleSuppressed(dummyIssueRule.ID())).Should(BeTrue())
 		})
 	})
 })
